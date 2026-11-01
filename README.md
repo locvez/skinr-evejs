@@ -73,7 +73,9 @@ Open `/imports` (the **Import JSON** link in the site bar). Load one or all desi
 snapshots from `src/skinrJSON`, or choose local JSON files. The importer accepts
 EVE Ref maps keyed by design ID, individual ESI designs, and arrays of designs.
 Use `skinr-details-*.json`; listing snapshots contain offers rather than recipes.
-JSON snapshots are local input data and are not included in the repository.
+The repository includes 70 design snapshots and 70 matching listing snapshots
+in this folder. Use the design snapshots for imports; listing snapshots are
+included for reference.
 The local Docker stack mounts this folder read-only. `SKINR_JSON_DIR` changes the
 folder for a native API process. Uploads are limited to 32 MiB per file.
 

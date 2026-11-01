@@ -37,6 +37,8 @@ struct DesignOut {
     listings: i64,
     quantity: i64,
     min_price_plex: Option<i64>,
+    imported: bool,
+    source_file: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -74,6 +76,8 @@ struct DesignRow {
     listings: i64,
     quantity: i64,
     min_price_plex: Option<i64>,
+    imported: bool,
+    source_file: Option<String>,
 }
 
 #[derive(sqlx::FromRow)]
@@ -145,12 +149,14 @@ pub async fn ship_skinrs(
     let rows = sqlx::query_as::<_, DesignRow>(
         "select d.id, d.name, d.line, d.tier, d.creator_id, c.name as creator_name, d.layout,
                 count(l.id) as listings, coalesce(sum(l.quantity), 0)::bigint as quantity,
-                min(l.price_plex) as min_price_plex
+                min(l.price_plex) as min_price_plex,
+                i.skinr_id is not null as imported, i.source_file
          from skinr_designs d
-         join skinr_listings l on l.skinr_id = d.id and l.state = $2 and l.expires > now()
+         left join skinr_listings l on l.skinr_id = d.id and l.state = $2 and l.expires > now()
+         left join skinr_imports i on i.skinr_id = d.id
          left join esi_characters c on c.id = d.creator_id
-         where d.ship_type_id = $1
-         group by d.id, c.name
+         where d.ship_type_id = $1 and (l.id is not null or i.skinr_id is not null)
+         group by d.id, c.name, i.skinr_id, i.source_file
          order by count(l.id) desc, d.name",
     )
     .bind(id)
@@ -177,6 +183,8 @@ pub async fn ship_skinrs(
             listings: row.listings,
             quantity: row.quantity,
             min_price_plex: row.min_price_plex,
+            imported: row.imported,
+            source_file: row.source_file,
         });
     }
 

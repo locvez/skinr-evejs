@@ -141,5 +141,7 @@ pub struct ShipSkin {
     pub material_id: i32,
     pub name: String,
     pub sof_faction: String,
+    /// Material, pattern and texture overrides from the graphic material set.
+    pub dna_suffix: String,
     pub colors: LiveryColors,
 }

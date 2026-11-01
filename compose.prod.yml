@@ -1,6 +1,6 @@
 # Production, a Coolify Docker Compose resource (this file), deployed
-# from the images .github/workflows/release.yml pushes to GHCR on every
-# merge to main.
+# from the images .github/workflows/release.yml pushes to GHCR when
+# manually dispatched.
 #
 # Only skinr-proxy gets a domain: in Coolify set its "Domains" to
 # https://skinr.space,https://www.skinr.space and leave the rest without
@@ -31,7 +31,7 @@ x-logging: &logging
 
 services:
   skinr-sde-import:
-    image: ghcr.io/nicolaskion/skinr-api:latest
+    image: ghcr.io/locvez/skinr-evejs-api:latest
     pull_policy: always
     command: ["sde_import"]
     environment:
@@ -47,7 +47,7 @@ services:
     logging: *logging
 
   skinr-api:
-    image: ghcr.io/nicolaskion/skinr-api:latest
+    image: ghcr.io/locvez/skinr-evejs-api:latest
     pull_policy: always
     environment:
       DATABASE_URL: ${DATABASE_URL:?}
@@ -78,7 +78,7 @@ services:
     logging: *logging
 
   skinr-frontend:
-    image: ghcr.io/nicolaskion/skinr-frontend:latest
+    image: ghcr.io/locvez/skinr-evejs-frontend:latest
     pull_policy: always
     environment:
       AXUM_URL: http://skinr-api:3100
@@ -90,7 +90,7 @@ services:
     logging: *logging
 
   skinr-proxy:
-    image: ghcr.io/nicolaskion/skinr-proxy:latest
+    image: ghcr.io/locvez/skinr-evejs-proxy:latest
     pull_policy: always
     environment:
       API_HOST: skinr-api

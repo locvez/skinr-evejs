@@ -208,6 +208,22 @@ export interface SkinrDesign {
   listings: number;
   quantity: number;
   min_price_plex: number | null;
+  imported?: boolean;
+  source_file?: string | null;
+}
+
+export interface SkinrImportStatus {
+  folder_available: boolean;
+  files: { name: string; bytes: number; kind: 'designs' | 'listings' }[];
+  imported_designs: number;
+  ships: { id: number; name: string; designs: number }[];
+}
+
+export interface SkinrImportReport {
+  files: number;
+  designs: number;
+  added: number;
+  already_imported: number;
 }
 
 /** `/api/ships/{id}/skinrs`. */

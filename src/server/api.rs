@@ -1,9 +1,9 @@
 //! The JSON API the frontend reads ship data from.
 
-use axum::extract::{Path, State};
+use axum::extract::{DefaultBodyLimit, Path, State};
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Serialize;
 use sqlx::PgPool;
@@ -23,6 +23,16 @@ pub fn router() -> Router<AppState> {
         .route("/skins/layers/{file}", get(skin_icon_layer))
         .route("/ships/{id}/skinrs", get(super::skinr::ship_skinrs))
         .route("/skinr/icons/{file}", get(super::skinr::component_icon))
+        .route("/skinr/evejs-target", get(super::imports::export_target))
+        .route(
+            "/skinr/imports",
+            get(super::imports::status).post(super::imports::import_folder),
+        )
+        .route(
+            "/skinr/imports/upload",
+            post(super::imports::upload)
+                .layer(DefaultBodyLimit::max(super::imports::MAX_JSON_BYTES)),
+        )
         .route("/thumbnails/{file}", get(thumbnail))
         .fallback(not_found)
 }
@@ -300,6 +310,7 @@ struct SkinRow {
     icon_colors: Option<String>,
     name: String,
     sof_faction: String,
+    dna_suffix: String,
     color_primary: Option<String>,
     color_secondary: Option<String>,
     color_hull: Option<String>,
@@ -429,7 +440,7 @@ async fn ship(
     .ok_or_else(|| error(StatusCode::NOT_FOUND, "Ship not found."))?;
 
     let skins = sqlx::query_as::<_, SkinRow>(
-        "select skin_id, ship_skins.material_id, name, sof_faction,
+        "select skin_id, ship_skins.material_id, name, sof_faction, dna_suffix,
                 color_primary, color_secondary, color_hull,
                 skin_icons.material_id is not null as has_icon, skin_icons.colors as icon_colors
          from ship_skins left join skin_icons using (material_id)
@@ -443,7 +454,11 @@ async fn ship(
     .map(|skin| Skin {
         id: skin.skin_id,
         name: skin.name,
-        dna: dna(&row.sof_hull, &skin.sof_faction, &row.sof_race),
+        dna: format!(
+            "{}{}",
+            dna(&row.sof_hull, &skin.sof_faction, &row.sof_race),
+            skin.dna_suffix
+        ),
         colors: Colors {
             primary: skin.color_primary,
             secondary: skin.color_secondary,

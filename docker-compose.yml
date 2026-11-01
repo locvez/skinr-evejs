@@ -63,6 +63,8 @@ services:
     volumes:
       # Ship thumbnails from frontend/scripts/render-thumbnails.ts, rendered on the host.
       - ./storage/thumbnails:/app/storage/thumbnails:ro
+      - ./src/skinrJSON:/app/src/skinrJSON:ro
+      - ./storage/evejs:/app/storage/evejs:ro
     depends_on:
       postgres:
         condition: service_healthy

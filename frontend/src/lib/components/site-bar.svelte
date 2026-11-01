@@ -4,7 +4,7 @@
   // the right the page's sections, with a pill sliding under the one in
   // view, and its reset button; last the theme switch. The bar never changes
   // shape while scrolling.
-  import { ChevronRight, Moon, RotateCcw, Sun } from '@lucide/svelte';
+  import { ChevronRight, Moon, RotateCcw, Sun, Upload } from '@lucide/svelte';
   import Logo from '#lib/components/logo.svelte';
   import { nav } from '#lib/nav.svelte.js';
   import { theme } from '#lib/theme.svelte.js';
@@ -55,6 +55,14 @@
     {/if}
 
     <div class="ml-auto flex items-center gap-1">
+      <a
+        href="/imports"
+        aria-label="Import JSON"
+        title="Import JSON"
+        class="flex items-center gap-2 rounded-full px-3 py-2 text-sm text-foreground/70 hover:text-foreground"
+      >
+        <Upload class="size-4" /><span class="hidden sm:inline">Import JSON</span>
+      </a>
       {#if nav.sections.length}
         <div class="relative hidden items-center lg:flex">
           {#if pill}

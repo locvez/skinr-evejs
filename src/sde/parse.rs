@@ -185,6 +185,20 @@ struct MaterialSetRow {
     id: i32,
     #[serde(rename = "sofFactionName")]
     sof_faction: Option<String>,
+    #[serde(rename = "material1")]
+    material_1: Option<String>,
+    #[serde(rename = "material2")]
+    material_2: Option<String>,
+    #[serde(rename = "material3")]
+    material_3: Option<String>,
+    #[serde(rename = "material4")]
+    material_4: Option<String>,
+    custommaterial1: Option<String>,
+    custommaterial2: Option<String>,
+    #[serde(rename = "sofPatternName")]
+    pattern: Option<String>,
+    #[serde(rename = "resPathInsert")]
+    res_path_insert: Option<String>,
     #[serde(rename = "colorPrimary")]
     color_primary: Option<Rgb>,
     #[serde(rename = "colorSecondary")]
@@ -194,6 +208,57 @@ struct MaterialSetRow {
 }
 
 impl MaterialSetRow {
+    /// SOF commands preserve skins that share the hull's base faction.
+    fn dna_suffix(&self) -> String {
+        let mut suffix = String::new();
+        let materials = [
+            &self.material_1,
+            &self.material_2,
+            &self.material_3,
+            &self.material_4,
+        ];
+        if materials.iter().any(|material| material.is_some()) {
+            suffix.push_str(":material?");
+            suffix.push_str(
+                &materials
+                    .map(|material| {
+                        material
+                            .as_deref()
+                            .filter(|value| !value.is_empty())
+                            .unwrap_or("none")
+                            .to_lowercase()
+                    })
+                    .join(";"),
+            );
+        }
+        if let Some(pattern) = self
+            .pattern
+            .as_deref()
+            .filter(|value| !value.is_empty() && !value.eq_ignore_ascii_case("none"))
+        {
+            suffix.push_str(&format!(
+                ":pattern?{pattern};{};{}",
+                self.custommaterial1
+                    .as_deref()
+                    .filter(|value| !value.is_empty())
+                    .unwrap_or("none")
+                    .to_lowercase(),
+                self.custommaterial2
+                    .as_deref()
+                    .filter(|value| !value.is_empty())
+                    .unwrap_or("none")
+                    .to_lowercase()
+            ));
+        }
+        if let Some(insert) = &self.res_path_insert {
+            // Empty strings in the SDE mean no texture insert. An empty DNA
+            // argument is malformed; the renderer spells this sentinel `none`.
+            let insert = if insert.is_empty() { "none" } else { insert };
+            suffix.push_str(&format!(":respathinsert?{}", insert.to_lowercase()));
+        }
+        suffix
+    }
+
     fn colors(&self) -> LiveryColors {
         LiveryColors {
             primary: self.color_primary.as_ref().map(Rgb::hex),
@@ -203,10 +268,10 @@ impl MaterialSetRow {
     }
 }
 
-/// The material sets that swap in a SOF faction, by id, plus the colors of
+/// Graphic material sets by id, plus the colors of
 /// each faction (its lowest-id set) for the liveries no skin names.
 struct MaterialSets {
-    by_id: HashMap<i32, (String, LiveryColors)>,
+    by_id: HashMap<i32, MaterialSetRow>,
     by_faction: HashMap<String, LiveryColors>,
 }
 
@@ -219,14 +284,12 @@ fn read_material_sets(reader: impl BufRead) -> Result<MaterialSets, Error> {
         by_faction: HashMap::new(),
     };
     for row in rows {
-        let Some(faction) = row.sof_faction.clone() else {
-            continue;
-        };
-        let colors = row.colors();
-        sets.by_faction
-            .entry(faction.clone())
-            .or_insert_with(|| colors.clone());
-        sets.by_id.insert(row.id, (faction, colors));
+        if let Some(faction) = &row.sof_faction {
+            sets.by_faction
+                .entry(faction.clone())
+                .or_insert_with(|| row.colors());
+        }
+        sets.by_id.insert(row.id, row);
     }
     Ok(sets)
 }
@@ -386,8 +449,7 @@ pub fn parse<R: BufRead>(files: SdeFiles<R>) -> Result<ShipTables, Error> {
     })
 }
 
-/// The Tranquility skins of each ship that swap in a SOF faction, one per
-/// distinct faction (Serenity-only twins share their material set).
+/// Tranquility skins, deduplicated by their complete SOF appearance.
 fn parse_skins<R: BufRead>(
     ships: &[Ship],
     skins: R,
@@ -399,19 +461,12 @@ fn parse_skins<R: BufRead>(
         .map(|ship| (ship.id, ship.sof_faction.as_str()))
         .collect();
 
-    let materials: HashMap<i32, (String, String, LiveryColors)> =
+    let materials: HashMap<i32, (String, &MaterialSetRow)> =
         read_jsonl::<SkinMaterialRow>(skin_materials)?
             .into_iter()
             .filter_map(|material| {
-                let (faction, colors) = material_sets.by_id.get(&material.material_set_id?)?;
-                Some((
-                    material.id,
-                    (
-                        material.display_name.text(),
-                        faction.clone(),
-                        colors.clone(),
-                    ),
-                ))
+                let set = material_sets.by_id.get(&material.material_set_id?)?;
+                Some((material.id, (material.display_name.text(), set)))
             })
             .collect();
 
@@ -424,14 +479,18 @@ fn parse_skins<R: BufRead>(
         .into_iter()
         .filter(|skin| skin.visible_tranquility)
     {
-        let Some((name, faction, colors)) = materials.get(&skin.skin_material_id) else {
+        let Some((name, set)) = materials.get(&skin.skin_material_id) else {
             continue;
         };
         for ship_id in skin.types {
             let Some(default) = defaults.get(&ship_id) else {
                 continue;
             };
-            if faction == default || !seen.insert((ship_id, faction.clone())) {
+            let faction = set.sof_faction.as_deref().unwrap_or(default);
+            let dna_suffix = set.dna_suffix();
+            if (faction == *default && dna_suffix.is_empty())
+                || !seen.insert((ship_id, faction.to_owned(), dna_suffix.clone()))
+            {
                 continue;
             }
             out.push(ShipSkin {
@@ -439,8 +498,9 @@ fn parse_skins<R: BufRead>(
                 skin_id: skin.id,
                 material_id: skin.skin_material_id,
                 name: name.clone(),
-                sof_faction: faction.clone(),
-                colors: colors.clone(),
+                sof_faction: faction.to_owned(),
+                dna_suffix,
+                colors: set.colors(),
             });
         }
     }
@@ -601,7 +661,7 @@ mod tests {
     }
 
     #[test]
-    fn skins_swap_the_faction_once_per_ship() {
+    fn skins_preserve_material_overrides_and_deduplicate_complete_looks() {
         let skins = concat!(
             r#"{"_key": 1, "skinMaterialID": 10, "types": [603], "visibleTranquility": true}"#,
             "\n",
@@ -614,7 +674,7 @@ mod tests {
             // The ship's own faction is not a skin.
             r#"{"_key": 4, "skinMaterialID": 11, "types": [603], "visibleTranquility": true}"#,
             "\n",
-            // A material-only set has no faction to swap in.
+            // A material-only set inherits the hull's faction.
             r#"{"_key": 5, "skinMaterialID": 12, "types": [603], "visibleTranquility": true}"#,
             "\n",
             // A type that is not a stored ship.
@@ -624,18 +684,112 @@ mod tests {
 
         assert_eq!(
             tables.skins,
-            vec![ShipSkin {
-                ship_id: 603,
-                skin_id: 1,
-                material_id: 10,
-                name: "Nugoeihuvi".into(),
-                sof_faction: "noh".into(),
-                colors: LiveryColors {
-                    primary: Some("#ff0000".into()),
-                    secondary: None,
-                    hull: None,
+            vec![
+                ShipSkin {
+                    ship_id: 603,
+                    skin_id: 1,
+                    material_id: 10,
+                    name: "Nugoeihuvi".into(),
+                    sof_faction: "noh".into(),
+                    dna_suffix: String::new(),
+                    colors: LiveryColors {
+                        primary: Some("#ff0000".into()),
+                        secondary: None,
+                        hull: None,
+                    },
                 },
-            }]
+                ShipSkin {
+                    ship_id: 603,
+                    skin_id: 5,
+                    material_id: 12,
+                    name: "Materials only".into(),
+                    sof_faction: "caldaribase".into(),
+                    dna_suffix: ":material?black_satin_enamel;none;none;none".into(),
+                    colors: LiveryColors::default(),
+                }
+            ]
+        );
+    }
+
+    #[test]
+    fn ibis_skins_keep_their_materials_patterns_and_texture_overrides() {
+        let sets = concat!(
+            r#"{"_key":173,"material1":"black_satin_matt","material2":"grey_darksteel_brushed","material3":"white_bone_enamel","material4":"white_bone_enamel","sofPatternName":"glacialdrift_caldari","custommaterial1":"blue_lapis_polished","custommaterial2":"blue_cobalt_enamel","resPathInsert":"none"}"#,
+            "\n",
+            r#"{"_key":212,"sofFactionName":"caldaribase","material3":"blue_darknavy_enamel","material4":"orange_bright_coated","resPathInsert":"caldari"}"#,
+            "\n",
+            r#"{"_key":2604,"sofFactionName":"caldaribase","material1":"black_deadstar_polished","sofPatternName":"discovery_covid_20_amarr_caldari","custommaterial1":"blue_olympic_metallic"}"#,
+            "\n",
+            r#"{"_key":2813,"sofFactionName":"caldaribase","material1":"black_deadstar_polished","sofPatternName":"discovery_covid_20_amarr_caldari","custommaterial1":"yellow_industrial_metallic"}"#,
+        );
+        let mut input = files(
+            MERLIN,
+            concat!(
+                r#"{"_key":3752,"skinMaterialID":136,"types":[603],"visibleTranquility":true}"#,
+                "\n",
+                r#"{"_key":4306,"skinMaterialID":186,"types":[603],"visibleTranquility":true}"#,
+                "\n",
+                r#"{"_key":9285,"skinMaterialID":2519,"types":[603],"visibleTranquility":true}"#,
+                "\n",
+                r#"{"_key":10957,"skinMaterialID":2765,"types":[603],"visibleTranquility":true}"#,
+            ),
+        );
+        input.material_sets = sets.as_bytes();
+        input.skin_materials = concat!(
+            r#"{"_key":136,"displayName":{"en":"Glacial Drift"},"materialSetID":173}"#,
+            "\n",
+            r#"{"_key":186,"displayName":{"en":"Exoplanets Hunter"},"materialSetID":212}"#,
+            "\n",
+            r#"{"_key":2519,"displayName":{"en":"Biosecurity Responders"},"materialSetID":2604}"#,
+            "\n",
+            r#"{"_key":2765,"displayName":{"en":"Halcyon Dawn"},"materialSetID":2813}"#,
+        )
+        .as_bytes();
+        let tables = parse(input).unwrap();
+        assert_eq!(tables.skins.len(), 4);
+        assert!(
+            tables
+                .skins
+                .iter()
+                .all(|skin| skin.sof_faction == "caldaribase")
+        );
+        assert_eq!(
+            tables.skins[0].dna_suffix,
+            ":material?black_satin_matt;grey_darksteel_brushed;white_bone_enamel;white_bone_enamel:pattern?glacialdrift_caldari;blue_lapis_polished;blue_cobalt_enamel:respathinsert?none"
+        );
+        assert!(
+            tables.skins[1]
+                .dna_suffix
+                .ends_with(":respathinsert?caldari")
+        );
+        assert_ne!(tables.skins[2].dna_suffix, tables.skins[3].dna_suffix);
+    }
+
+    #[test]
+    fn empty_and_none_overrides_do_not_generate_invalid_dna_commands() {
+        let set: MaterialSetRow = serde_json::from_str(
+            r#"{
+            "_key": 1, "material1": "None", "material2": "",
+            "material3": "WHITE_SNOW_MATT", "sofPatternName": "None",
+            "custommaterial1": "", "resPathInsert": ""
+        }"#,
+        )
+        .unwrap();
+        assert_eq!(
+            set.dna_suffix(),
+            ":material?none;none;white_snow_matt;none:respathinsert?none"
+        );
+
+        let set: MaterialSetRow = serde_json::from_str(
+            r#"{
+            "_key": 2, "sofPatternName": "caldari_union_t3",
+            "custommaterial1": "", "custommaterial2": "None", "resPathInsert": ""
+        }"#,
+        )
+        .unwrap();
+        assert_eq!(
+            set.dna_suffix(),
+            ":pattern?caldari_union_t3;none;none:respathinsert?none"
         );
     }
 }

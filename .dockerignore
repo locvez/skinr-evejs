@@ -2,6 +2,7 @@ target
 frontend
 node_modules
 storage
+src/skinrJSON
 deploy
 _prototype
 .git

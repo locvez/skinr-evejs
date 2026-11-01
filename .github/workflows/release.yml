@@ -1,22 +1,8 @@
 name: Release
 
-# Builds the api, frontend and proxy images on every change to main that
-# reaches them, pushes them to GHCR (latest and the commit) and asks
-# Coolify to redeploy.
+# Manually builds the api, frontend and proxy images, pushes them to this
+# repository's GHCR namespace, and optionally asks Coolify to redeploy.
 on:
-  push:
-    branches: [main]
-    paths:
-      - "src/**"
-      - "migrations/**"
-      - Cargo.toml
-      - Cargo.lock
-      - Dockerfile
-      - .dockerignore
-      - "frontend/**"
-      - "deploy/**"
-      - compose.prod.yml
-      - .github/workflows/release.yml
   workflow_dispatch:
 
 concurrency:
@@ -54,8 +40,8 @@ jobs:
           platforms: linux/amd64
           push: true
           tags: |
-            ghcr.io/nicolaskion/skinr-${{ matrix.service }}:latest
-            ghcr.io/nicolaskion/skinr-${{ matrix.service }}:${{ github.sha }}
+            ghcr.io/${{ github.repository }}-${{ matrix.service }}:latest
+            ghcr.io/${{ github.repository }}-${{ matrix.service }}:${{ github.sha }}
           cache-from: type=gha,scope=${{ matrix.service }}
           cache-to: type=gha,scope=${{ matrix.service }},mode=max
 

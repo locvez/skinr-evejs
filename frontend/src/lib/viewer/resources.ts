@@ -3,6 +3,8 @@
 // for browsers often enough that direct requests cannot be relied on).
 import { CjsFileIndexLibrary } from '@carbonenginejs/runtime/tools/fileindex';
 import { EveSOF } from '@carbonenginejs/runtime/sof';
+import { CjsBlackFormat } from '@carbonenginejs/runtime/resource/formats/black';
+import { createSofSource, SOF_CATALOGUE } from './sof-source.ts';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 export type FileIndexLibrary = any;
@@ -45,15 +47,19 @@ export async function readBytes(library: FileIndexLibrary, path: string): Promis
   return new Uint8Array(await response.arrayBuffer());
 }
 
-export async function openSof(library: FileIndexLibrary): Promise<SpaceObjectFactory> {
-  const sof = await new EveSOF().Register({
-    lazyData: {
-      source: (path: string) => {
-        const url = resolveUrl(library, path);
-        if (!url) throw new Error(`Not in the file index: ${path}`);
-        return fetch(url);
-      },
+export async function openSof(
+  library: FileIndexLibrary,
+  read = (path: string) => readBytes(library, path),
+): Promise<SpaceObjectFactory> {
+  const source = createSofSource(
+    (path) => resolveUrl(library, path) !== null,
+    read,
+    async () => {
+      return CjsBlackFormat.readPayload(await read(SOF_CATALOGUE), {}).object;
     },
+  );
+  const sof = await new EveSOF().Register({
+    lazyData: { source },
     resources: { exists: async (path: string) => !!library.Resolve(path) },
   });
   await sof.InitializeAsync();

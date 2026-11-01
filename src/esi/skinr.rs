@@ -9,7 +9,8 @@
 
 use std::time::Duration;
 
-use serde::Deserialize;
+use futures_util::{StreamExt, stream};
+use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 
 use super::client::{Error, EsiClient};
@@ -20,7 +21,9 @@ const PAGE_SIZE: u32 = 100;
 /// well inside the route's 150 tokens per 15 minutes.
 const MAX_PAGES_PER_RUN: usize = 40;
 /// Designs fetched per run (their route allows 12000 tokens per 15 minutes).
-const MAX_DESIGNS_PER_RUN: usize = 1000;
+const MAX_DESIGNS_PER_RUN: usize = 10_000;
+/// Bounded parallel requests let an initial catalogue catch up promptly.
+const DESIGN_FETCHES: usize = 8;
 /// IDs per `/universe/names` request.
 const NAMES_PER_REQUEST: usize = 500;
 /// The pause between the end of one run and the start of the next.
@@ -65,7 +68,7 @@ impl Listing {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct Design {
     pub id: String,
     pub name: String,
@@ -78,7 +81,7 @@ pub struct Design {
     pub layout: serde_json::Value,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct Tier {
     pub level: i32,
 }
@@ -141,8 +144,16 @@ pub async fn sync(
         .fetch_optional(pool)
         .await?
         .unwrap_or_else(|| FIRST_CURSOR.to_owned());
+    let mut listing_error = None;
     for _ in 0..MAX_PAGES_PER_RUN {
-        let page = fetch_listings(esi, &cursor).await?;
+        let page = match fetch_listings(esi, &cursor).await {
+            Ok(page) => page,
+            Err(error) => {
+                // Already stored listings can still be made viewable during an outage.
+                listing_error = Some(error);
+                break;
+            }
+        };
         if page.listings.is_empty() {
             break;
         }
@@ -166,15 +177,21 @@ pub async fn sync(
     }
 
     let missing: Vec<String> = sqlx::query_scalar(
-        "select distinct l.skinr_id from skinr_listings l
+        "select l.skinr_id from skinr_listings l
          left join skinr_designs d on d.id = l.skinr_id
-         where d.id is null limit $1",
+         where d.id is null and l.state = 'listed' and l.expires > now()
+         group by l.skinr_id order by max(l.last_modified) desc, l.skinr_id limit $1",
     )
     .bind(MAX_DESIGNS_PER_RUN as i64)
     .fetch_all(pool)
     .await?;
-    for skinr_id in missing {
-        match fetch_design(esi, &skinr_id).await {
+    let mut designs = stream::iter(missing.into_iter().map(|id| async move {
+        let result = fetch_design(esi, &id).await;
+        (id, result)
+    }))
+    .buffer_unordered(DESIGN_FETCHES);
+    while let Some((skinr_id, result)) = designs.next().await {
+        match result {
             Ok(design) => {
                 store_design(pool, &design).await?;
                 report.designs += 1;
@@ -203,6 +220,10 @@ pub async fn sync(
         report.names += 1;
     }
 
+    if let Some(error) = listing_error {
+        tracing::info!(?report, "SKINR designs updated despite listing failure");
+        return Err(error.into());
+    }
     Ok(report)
 }
 

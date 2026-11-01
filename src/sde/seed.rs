@@ -98,8 +98,8 @@ pub async fn seed(pool: &PgPool, tables: &ShipTables) -> sqlx::Result<()> {
     for skin in &tables.skins {
         sqlx::query(
             "insert into ship_skins (ship_id, skin_id, material_id, name, sof_faction,
-                color_primary, color_secondary, color_hull)
-             values ($1, $2, $3, $4, $5, $6, $7, $8)",
+                color_primary, color_secondary, color_hull, dna_suffix)
+             values ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
         )
         .bind(skin.ship_id)
         .bind(skin.skin_id)
@@ -109,6 +109,7 @@ pub async fn seed(pool: &PgPool, tables: &ShipTables) -> sqlx::Result<()> {
         .bind(&skin.colors.primary)
         .bind(&skin.colors.secondary)
         .bind(&skin.colors.hull)
+        .bind(&skin.dna_suffix)
         .execute(&mut *tx)
         .await?;
     }

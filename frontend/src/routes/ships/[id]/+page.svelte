@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { ChevronDown, LoaderCircle } from '@lucide/svelte';
+  import { ChevronDown, Download, LoaderCircle } from '@lucide/svelte';
   import { goto } from '$app/navigation';
   import { page } from '$app/state';
   import Blueprint from '#lib/components/blueprint.svelte';
@@ -9,6 +9,7 @@
   import SectionStage from '#lib/components/section-stage.svelte';
   import SkinRail from '#lib/components/skin-rail.svelte';
   import { skinrIcon, skinrLook } from '#lib/skinr.js';
+  import { evejsExport, evejsFilename } from '#lib/evejs-export.js';
   import SheetMargin from '#lib/components/sheet-margin.svelte';
   import ShipRail from '#lib/components/ship-rail.svelte';
   import SkinIcon from '#lib/components/skin-icon.svelte';
@@ -34,8 +35,28 @@
   const skin = $derived(ship.skins.find((candidate) => candidate.id === skinId) ?? null);
   /** The chosen player design from `?skinr=`, which replaces the livery. */
   const skinrs = $derived(data.skinrs);
+  const designFilter = $derived(page.url.searchParams.get('designs') ?? 'all');
+  const visibleDesigns = $derived(
+    skinrs.designs.filter((design) =>
+      designFilter === 'imported'
+        ? design.imported
+        : designFilter === 'listed'
+          ? design.listings > 0
+          : true,
+    ),
+  );
+  let exportError = $state('');
   const skinrId = $derived(page.url.searchParams.get('skinr'));
   const skinrDesign = $derived(skinrs.designs.find((design) => design.id === skinrId) ?? null);
+  const exportIssue = $derived.by(() => {
+    if (!skinrDesign) return null;
+    try {
+      evejsExport(ship, skinrDesign, skinrs, data.evejsTarget);
+      return null;
+    } catch (cause) {
+      return cause instanceof Error ? cause.message : String(cause);
+    }
+  });
   const look = $derived(
     skinrDesign ? skinrLook(ship.dna, skinrDesign, skinrs.components, skinrs.slot_materials) : null,
   );
@@ -81,7 +102,7 @@
    */
   function selectSkinr(design: { id: string }, direction?: 1 | -1) {
     if (design.id === skinrId) return;
-    const order = skinrs.designs.map((candidate) => candidate.id);
+    const order = visibleDesigns.map((candidate) => candidate.id);
     const current = skinrId === null ? -1 : order.indexOf(skinrId);
     stage.direction = direction ?? (order.indexOf(design.id) >= current ? 1 : -1);
     const url = new URL(page.url.href);
@@ -95,6 +116,33 @@
    * the stage sits (beside the chapter's text on wide screens) and the camera
    * angle. The chapter crossing the middle of the screen is the active one.
    */
+  function filterDesigns(filter: string) {
+    const url = new URL(page.url.href);
+    if (filter === 'all') url.searchParams.delete('designs');
+    else url.searchParams.set('designs', filter);
+    goto(url, { replace: true, reset: false });
+  }
+
+  function exportDesign() {
+    if (!skinrDesign) return;
+    exportError = '';
+    try {
+      const bundle = evejsExport(ship, skinrDesign, skinrs, data.evejsTarget);
+      const url = URL.createObjectURL(
+        new Blob([JSON.stringify(bundle, null, 2) + '\n'], { type: 'application/json' }),
+      );
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = evejsFilename(skinrDesign.name, skinrDesign.id);
+      document.body.append(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 0);
+    } catch (cause) {
+      exportError = cause instanceof Error ? cause.message : String(cause);
+    }
+  }
+
   type Chapter = 'hero' | 'profile' | 'blueprint' | 'liveries' | 'more';
   const RIGHT: StagePlacement = { x: 0.2, scale: 0.8 };
   /**
@@ -193,15 +241,13 @@
   ]);
   const liveryName = $derived(skin?.name ?? 'Standard issue');
   /** Whether the ship has anything to wear besides its own colors. */
-  const wearable = $derived(ship.skins.length > 0 || skinrs.designs.length > 0);
-
   // The livery chapter's two rails: the game's own skins, the players' designs.
   const liveryKey = (id: number | null) => `skin-${id ?? 'standard'}`;
   const skinItems = $derived(
     liveries.map((livery) => ({ key: liveryKey(livery.id), name: livery.name, livery })),
   );
   const designItems = $derived(
-    skinrs.designs.map((design) => ({ key: design.id, name: design.name, design })),
+    visibleDesigns.map((design) => ({ key: design.id, name: design.name, design })),
   );
   const plex = new Intl.NumberFormat('en-US');
   /**
@@ -217,7 +263,8 @@
     const wrap = (index: number, length: number) => (index + step + length) % length;
     event.preventDefault();
     if (chapter === 'liveries' && skinrDesign) {
-      const designs = skinrs.designs;
+      const designs = visibleDesigns;
+      if (!designs.length) return;
       selectSkinr(designs[wrap(designs.indexOf(skinrDesign), designs.length)], step);
       return;
     }
@@ -312,7 +359,7 @@
     nav.sections = [
       ...(ship.description ? [{ id: 'profile', label: 'Profile' }] : []),
       { id: 'blueprint', label: 'Blueprint' },
-      ...(wearable ? [{ id: 'liveries', label: 'Skins' }] : []),
+      { id: 'liveries', label: 'Skins' },
       ...(rails.length ? [{ id: 'related', label: 'Related' }] : []),
     ];
     nav.reset = () => stage.resetView?.();
@@ -487,87 +534,129 @@
       </div>
     </section>
 
-    {#if wearable}
-      <section id="liveries" class="chapter relative" use:chapterOf={'liveries'}>
-        <SectionStage
-          key="liveries"
-          pose={FRONT_POSE}
-          {tint}
-          logoUrl={ship.faction?.logo_url ?? null}
-          {wide}
-          placement={RIGHT}
-        />
-        <div class="chapter-text relative">
-          <p class="reveal eyebrow mb-4" style:color={tint}>Skins</p>
-          <h2 class="reveal display mb-4 text-[clamp(2.25rem,4vw,3.5rem)]">
-            <span class="text-sheen"
-              >{liveries.length + skinrs.designs.length} looks. Try them on.</span
-            >
-          </h2>
-          <p class="reveal mb-10 max-w-md text-muted-foreground">
-            Every skin CCP makes for the {ship.name}{#if skinrs.designs.length}, and every design
-              capsuleers have up for sale on the Paragon Hub{/if}. See it on the hull before you
-            spend a single PLEX.
+    <section id="liveries" class="chapter relative" use:chapterOf={'liveries'}>
+      <SectionStage
+        key="liveries"
+        pose={FRONT_POSE}
+        {tint}
+        logoUrl={ship.faction?.logo_url ?? null}
+        {wide}
+        placement={RIGHT}
+      />
+      <div class="chapter-text relative">
+        <p class="reveal eyebrow mb-4" style:color={tint}>Skins</p>
+        <h2 class="reveal display mb-4 text-[clamp(2.25rem,4vw,3.5rem)]">
+          <span class="text-sheen"
+            >{liveries.length + skinrs.designs.length} looks. Try them on.</span
+          >
+        </h2>
+        <p class="reveal mb-10 max-w-md text-muted-foreground">
+          Browse in-game skins for the {ship.name}, Paragon Hub designs, and imported JSON designs.
+          Select a look to see it on the hull.
+        </p>
+
+        <!-- The look on the ship, from either rail. -->
+        <div class="reveal mb-6 min-h-14">
+          <p class="truncate text-2xl font-semibold tracking-tight">
+            {skinrDesign?.name ?? liveryName}
           </p>
+          <p class="mt-1 truncate text-sm text-muted-foreground">
+            {#if skinrDesign}
+              SKINR by <span class="text-foreground"
+                >{skinrDesign.creator.name ?? 'a capsuleer'}</span
+              >{#if skinrDesign.imported}
+                · Imported JSON{/if}{#if skinrDesign.min_price_plex !== null}{` · from ${plex.format(skinrDesign.min_price_plex)} PLEX`}{/if}
+            {:else if skin}
+              In-game skin
+            {:else}
+              The hull's own colors
+            {/if}
+          </p>
+          {#if skinrDesign}
+            <button
+              type="button"
+              onclick={exportDesign}
+              disabled={Boolean(exportIssue)}
+              class="mt-4 inline-flex items-center gap-2 rounded-xl bg-foreground/10 px-4 py-2.5 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <Download class="size-4" /> Export to EveJS
+            </button>
+            <p class="mt-2 text-xs text-muted-foreground">
+              {exportIssue ??
+                (data.evejsTarget
+                  ? 'EveOffline .skinr.json · creates an importable draft'
+                  : 'EveOffline .skinr.json · target content availability has not been checked')}
+            </p>
+            {#if exportError}<p role="alert" class="mt-2 text-sm text-destructive">
+                {exportError}
+              </p>{/if}
+          {/if}
+        </div>
 
-          <!-- The look on the ship, from either rail. -->
-          <div class="reveal mb-6 min-h-14">
-            <p class="truncate text-2xl font-semibold tracking-tight">
-              {skinrDesign?.name ?? liveryName}
-            </p>
-            <p class="mt-1 truncate text-sm text-muted-foreground">
-              {#if skinrDesign}
-                SKINR by <span class="text-foreground"
-                  >{skinrDesign.creator.name ?? 'a capsuleer'}</span
-                >{#if skinrDesign.min_price_plex !== null}{` · from ${plex.format(skinrDesign.min_price_plex)} PLEX`}{/if}
-              {:else if skin}
-                In-game skin
-              {:else}
-                The hull's own colors
-              {/if}
-            </p>
+        <div class="space-y-4">
+          <SkinRail
+            label="In-game"
+            items={skinItems}
+            selected={skinrDesign ? null : liveryKey(skinId)}
+            onselect={(item) => selectSkin(item.livery.id)}
+          >
+            {#snippet icon(item, selected)}
+              <SkinIcon
+                iconUrl={item.livery.icon_url}
+                iconColors={item.livery.icon_colors}
+                colors={item.livery.colors}
+                {selected}
+                class="size-14"
+              />
+            {/snippet}
+          </SkinRail>
+          <div class="flex flex-wrap items-center gap-2" aria-label="Filter SKINR designs">
+            {#each [{ key: 'all', label: 'All designs' }, { key: 'imported', label: 'Imported' }, { key: 'listed', label: 'On sale' }] as filter (filter.key)}
+              <button
+                type="button"
+                aria-pressed={designFilter === filter.key}
+                onclick={() => filterDesigns(filter.key)}
+                class="rounded-full px-3 py-1.5 text-xs text-muted-foreground aria-pressed:bg-foreground/10 aria-pressed:text-foreground"
+                >{filter.label}</button
+              >
+            {/each}
+            <a href="/imports" class="ml-auto text-xs text-muted-foreground hover:text-foreground"
+              >Import JSON</a
+            >
           </div>
-
-          <div class="space-y-4">
+          {#if designItems.length}
             <SkinRail
-              label="In-game"
-              items={skinItems}
-              selected={skinrDesign ? null : liveryKey(skinId)}
-              onselect={(item) => selectSkin(item.livery.id)}
+              label="SKINR"
+              items={designItems}
+              selected={skinrDesign?.id ?? null}
+              onselect={(item) => selectSkinr(item.design)}
             >
               {#snippet icon(item, selected)}
+                {@const look = skinrIcon(item.design, skinrs.components)}
                 <SkinIcon
-                  iconUrl={item.livery.icon_url}
-                  iconColors={item.livery.icon_colors}
-                  colors={item.livery.colors}
+                  colors={look.colors}
+                  patterns={look.patterns}
                   {selected}
                   class="size-14"
                 />
               {/snippet}
             </SkinRail>
-            {#if designItems.length}
-              <SkinRail
-                label="SKINR"
-                items={designItems}
-                selected={skinrDesign?.id ?? null}
-                onselect={(item) => selectSkinr(item.design)}
-              >
-                {#snippet icon(item, selected)}
-                  {@const look = skinrIcon(item.design, skinrs.components)}
-                  <SkinIcon
-                    colors={look.colors}
-                    patterns={look.patterns}
-                    {selected}
-                    class="size-14"
-                  />
-                {/snippet}
-              </SkinRail>
-            {/if}
-          </div>
+          {:else}
+            <p class="text-sm text-muted-foreground" role="status">
+              {#if data.skinrsUnavailable}
+                SKINR designs couldn’t be loaded. Reload the page to try again.
+              {:else}
+                No {designFilter === 'imported'
+                  ? 'imported'
+                  : designFilter === 'listed'
+                    ? 'listed'
+                    : 'SKINR'} designs are available for this hull yet.
+              {/if}
+            </p>
+          {/if}
         </div>
-      </section>
-    {/if}
-
+      </div>
+    </section>
     {#if rails.length}
       <section
         id="related"
